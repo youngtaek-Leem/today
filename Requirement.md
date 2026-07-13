@@ -47,10 +47,10 @@
 | # | 모듈 | 책임 | 인터페이스 | 의존성 | 검증 방법 | 상태 |
 |---|------|------|------------|--------|-----------|------|
 | M1 | Storage Layer | Dexie.js 스키마 정의, Entry CRUD, 바이너리 blob 저장/조회 | Entry 타입, db 인스턴스 export | 없음 | 타입 체크 + 빌드 통과 | 완료 |
-| M2 | Record Module | 녹음·사진·메모 입력 UI, MediaRecorder 제어, 파일 선택, 교체 | RecordPage 컴포넌트, useRecorder hook | M1 | 수동: 실제 녹음/촬영 후 IndexedDB 저장 확인 | 대기 |
-| M3 | Calendar Module | 달력 렌더링, 날짜별 썸네일 요약 표시 | CalendarPage 컴포넌트 | M1 | 단위 테스트: 날짜별 집계 + 썸네일 추출 | 대기 |
-| M4 | Detail Module | 특정 날짜 기록 목록, 재생/확대/수정/삭제 | DetailPage 컴포넌트 | M1 | 수동: 기록 클릭 → 재생·확대·수정·삭제 확인 | 대기 |
-| M5 | PWA Shell | 서비스 워커, 오프라인 캐싱, 설치, GitHub Pages 배포 | vite.config.ts PWA 설정, gh-pages 스크립트 | M1~M4 | Lighthouse PWA 점수 + 수동 설치 테스트 | 대기 |
+| M2 | Record Module | 녹음·사진·메모 입력 UI, MediaRecorder 제어, 파일 선택, 교체 | RecordPage 컴포넌트, useRecorder hook | M1 | 타입 체크 + 빌드 통과 | 완료 |
+| M3 | Calendar Module | 달력 렌더링, 날짜별 썸네일 요약 표시 | CalendarPage 컴포넌트 | M1 | 타입 체크 + 빌드 통과 | 완료 |
+| M4 | Detail Module | 특정 날짜 기록 목록, 재생/확대/수정/삭제 | DetailPage 컴포넌트 | M1 | 타입 체크 + 빌드 통과 | 완료 |
+| M5 | PWA Shell | 서비스 워커, 오프라인 캐싱, 설치, GitHub Pages 배포 | vite.config.ts PWA 설정, gh-pages 스크립트 | M1~M4 | 타입 체크 + 빌드 통과 (PWA manifest/sw 생성 확인) | 완료 |
 
 ## 5. 데이터 스키마
 

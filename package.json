@@ -3,11 +3,13 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "homepage": "https://leemyoungtaek.github.io/Project01",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy": "npm run build && gh-pages -d dist"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.2",
@@ -16,13 +18,15 @@
     "react-calendar": "^6.0.1",
     "react-dom": "^19.2.7",
     "tailwindcss": "^4.3.2",
-    "uuid": "^14.0.1"
+    "uuid": "^14.0.1",
+    "vite-plugin-pwa": "^1.3.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
+    "gh-pages": "^6.3.0",
     "oxlint": "^1.71.0",
     "typescript": "~6.0.2",
     "vite": "^8.1.1"
