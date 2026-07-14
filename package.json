@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "homepage": "https://leemyoungtaek.github.io/Project01",
+  "homepage": "https://youngtaek-leem.github.io/Project01",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
