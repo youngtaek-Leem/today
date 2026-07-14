@@ -5,7 +5,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: '/Project01/',
+  base: '/today/',
   plugins: [
     react(),
     tailwindcss(),
@@ -20,8 +20,8 @@ export default defineConfig({
         background_color: '#ffffff',
         display: 'standalone',
         orientation: 'portrait',
-        start_url: '/Project01/',
-        scope: '/Project01/',
+        start_url: '/today/',
+        scope: '/today/',
         icons: [
           {
             src: 'favicon.svg',

@@ -30,16 +30,23 @@ export default function CalendarPage({ onSelectDate }: CalendarPageProps) {
     setSummaries(map);
   };
 
+  const toLocalDateString = (date: Date): string => {
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const dd = String(date.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
   const handleDateChange = (value: Value) => {
     if (value instanceof Date) {
       setSelectedDate(value);
-      const dateStr = value.toISOString().slice(0, 10);
+      const dateStr = toLocalDateString(value);
       onSelectDate(dateStr);
     }
   };
 
   const formatDate = (date: Date): string => {
-    return date.toISOString().slice(0, 10);
+    return toLocalDateString(date);
   };
 
   const tileContent = ({ date, view }: { date: Date; view: string }) => {
