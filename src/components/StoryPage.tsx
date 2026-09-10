@@ -282,13 +282,6 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
     setDirty(false);
   };
 
-  const togglePhoto = (id: string) => {
-    const next = photoIds.includes(id)
-      ? photoIds.filter((x) => x !== id)
-      : [...photoIds, id];
-    markDirty(title, content, next);
-  };
-
   // --- 사진 칩: 탭(커서 삽입) + 길게 눌러 순서 변경 ---
 
   const trackCursor = () => {
@@ -743,44 +736,6 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
             )}
           </div>
         </div>
-
-        {/* 사진 선택·순서 */}
-        {photos.length > 0 && (
-          <div className="bg-white rounded-lg border border-gray-100 p-3">
-            <p className="text-xs text-gray-500 font-medium mb-2">
-              공유 사진 선택·순서 ({photoIds.length}/{photos.length}) — 탭하여 선택/해제
-            </p>
-            <div className="grid grid-cols-4 gap-2">
-              {photos.map((p) => {
-                const order = photoIds.indexOf(p.id);
-                const selected = order >= 0;
-                return (
-                  <button
-                    key={p.id}
-                    onClick={() => togglePhoto(p.id)}
-                    className={`relative rounded overflow-hidden ${selected ? 'ring-2 ring-blue-500' : 'opacity-50'}`}
-                  >
-                    {thumbs.get(p.id) ? (
-                      <img src={thumbs.get(p.id)} alt="" className="w-full h-16 object-cover" />
-                    ) : (
-                      <div className="w-full h-16 bg-gray-100 animate-pulse" />
-                    )}
-                    {selected && (
-                      <span className="absolute top-0.5 left-0.5 w-5 h-5 bg-blue-600 text-white text-[11px] rounded-full flex items-center justify-center font-bold">
-                        {order + 1}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-            {photoIds.length > 1 && (
-              <p className="mt-2 text-[11px] text-gray-400">
-                칩을 길게 눌러 끌면 위 순서가 바뀝니다
-              </p>
-            )}
-          </div>
-        )}
 
         {/* 공유 미리보기 */}
         {(title.trim() || content.trim()) && (
