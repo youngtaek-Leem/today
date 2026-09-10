@@ -8,8 +8,6 @@ import {
   blobToDataURL,
   appendPhotoMarkers,
   parseStoryBlocks,
-  insertMarkerAtGap,
-  moveMarkerToGap,
 } from '../storage/service';
 import type { Entry } from '../storage/types';
 import {
@@ -72,18 +70,20 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
   // 드래그 진행 상태 (ref: 로직용, state: 고스트·강조 렌더용)
   const dragRef = useRef<{
     photoNumber: number;
-    occurrence: number | null; // null = 칩트레이(신규 삽입), 숫자 = 미리보기 마커 이동
     startX: number;
     startY: number;
-    moved: boolean;
+    armed: boolean;
   } | null>(null);
+  const pressTimer = useRef<number | null>(null);
   const [dragView, setDragView] = useState<{
     x: number;
     y: number;
     thumb: string | null;
-    overGap: number | null;
-    overEditor: boolean;
+    overId: string | null;
+    side: -1 | 1;
+    armedId: string | null;
   } | null>(null);
+  const [chipArmed, setChipArmed] = useState(false);
 
   const todayStr = toLocalDateString(new Date());
   const photos = entries.filter((e) => e.type === 'photo');
@@ -289,16 +289,7 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
     markDirty(title, content, next);
   };
 
-  const movePhoto = (id: string, dir: -1 | 1) => {
-    const idx = photoIds.indexOf(id);
-    const j = idx + dir;
-    if (idx < 0 || j < 0 || j >= photoIds.length) return;
-    const next = [...photoIds];
-    [next[idx], next[j]] = [next[j], next[idx]];
-    markDirty(title, content, next);
-  };
-
-  // --- 사진 칩 드래그&드롭 ([사진n] 배치) ---
+  // --- 사진 칩: 탭(커서 삽입) + 길게 눌러 순서 변경 ---
 
   const trackCursor = () => {
     const el = textAreaRef.current;
@@ -331,90 +322,115 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
     return (id && thumbs.get(id)) || null;
   };
 
-  const dropTargetAt = (x: number, y: number) => {
-    const el = document.elementFromPoint(x, y);
-    const gapEl = el?.closest?.('[data-gap]');
-    const editorEl = el?.closest?.('[data-editor]');
-    return {
-      gap: gapEl ? parseInt(gapEl.getAttribute('data-gap') || '-1', 10) : null,
-      editor: !!editorEl,
-    };
+  const clearPressTimer = () => {
+    if (pressTimer.current !== null) {
+      clearTimeout(pressTimer.current);
+      pressTimer.current = null;
+    }
   };
 
-  const [dragArmed, setDragArmed] = useState(false);
-  const beginChipDrag = (
-    e: React.PointerEvent,
-    photoNumber: number,
-    occurrence: number | null,
-  ) => {
+  const beginChipPress = (e: React.PointerEvent, photoNumber: number) => {
     if (e.button !== undefined && e.button !== 0) return;
     dragRef.current = {
       photoNumber,
-      occurrence,
       startX: e.clientX,
       startY: e.clientY,
-      moved: false,
+      armed: false,
     };
-    setDragArmed(true);
+    setChipArmed(true);
+    // 400ms 정지 = 순서 변경 모드 진입 (이동하면 스크롤로 간주해 취소)
+    pressTimer.current = window.setTimeout(() => {
+      const d = dragRef.current;
+      if (!d) return;
+      d.armed = true;
+      setDragView({
+        x: d.startX,
+        y: d.startY,
+        thumb: thumbForNumber(d.photoNumber),
+        overId: null,
+        side: 1,
+        armedId: photoIds[d.photoNumber - 1] ?? null,
+      });
+      try {
+        navigator.vibrate?.(10);
+      } catch {
+        // 진동 미지원 기기 무시
+      }
+    }, 400);
   };
 
   useEffect(() => {
-    if (!dragArmed) return;
+    if (!chipArmed) return;
+    const chipAt = (x: number, y: number): { id: string; side: -1 | 1 } | null => {
+      const el = document.elementFromPoint(x, y);
+      const chip = el?.closest?.('[data-chip]');
+      if (!chip) return null;
+      const id = chip.getAttribute('data-chip');
+      if (!id) return null;
+      const r = chip.getBoundingClientRect();
+      return { id, side: x > r.left + r.width / 2 ? 1 : -1 };
+    };
     const onMove = (e: PointerEvent) => {
       const d = dragRef.current;
       if (!d) return;
-      if (!d.moved) {
-        if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < 10) return;
-        d.moved = true;
+      if (!d.armed) {
+        // 진입 전 움직임 = 스크롤 → 순서 모드 취소
+        if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) >= 10) {
+          clearPressTimer();
+        }
+        return;
       }
-      const t = dropTargetAt(e.clientX, e.clientY);
+      const t = chipAt(e.clientX, e.clientY);
       setDragView({
         x: e.clientX,
         y: e.clientY,
         thumb: thumbForNumber(d.photoNumber),
-        overGap: t.gap !== null && t.gap >= 0 ? t.gap : null,
-        overEditor: t.editor,
+        overId: t?.id ?? null,
+        side: t?.side ?? 1,
+        armedId: photoIds[d.photoNumber - 1] ?? null,
       });
     };
     const onUp = (e: PointerEvent) => {
       const d = dragRef.current;
+      clearPressTimer();
       dragRef.current = null;
       setDragView(null);
-      setDragArmed(false);
+      setChipArmed(false);
       if (!d) return;
-      if (!d.moved) {
-        // 탭: 칩트레이 칩만 커서에 삽입 (미리보기 마커 탭은 무시)
-        if (d.occurrence === null) insertMarkerAtCursor(d.photoNumber);
+      if (!d.armed) {
+        // 탭 = 커서 위치에 마커 삽입
+        insertMarkerAtCursor(d.photoNumber);
         return;
       }
-      const t = dropTargetAt(e.clientX, e.clientY);
-      if (t.gap !== null && t.gap >= 0) {
-        const next =
-          d.occurrence === null
-            ? insertMarkerAtGap(content, d.photoNumber, t.gap)
-            : moveMarkerToGap(content, d.occurrence, t.gap);
-        markDirty(title, next, photoIds);
-      } else if (t.editor) {
-        trackCursor();
-        insertMarkerAtCursor(d.photoNumber);
-      }
-      // 그 외 영역 드롭 = 취소
+      // 순서 변경 드롭: 트레이 안에서만 유효
+      const draggedId = photoIds[d.photoNumber - 1];
+      if (!draggedId) return;
+      const t = chipAt(e.clientX, e.clientY);
+      if (!t || t.id === draggedId) return;
+      const rest = photoIds.filter((id) => id !== draggedId);
+      let idx = rest.indexOf(t.id);
+      if (idx < 0) return;
+      if (t.side > 0) idx += 1;
+      rest.splice(idx, 0, draggedId);
+      markDirty(title, content, rest);
     };
     const onCancel = () => {
+      clearPressTimer();
       dragRef.current = null;
       setDragView(null);
-      setDragArmed(false);
+      setChipArmed(false);
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', onCancel);
     return () => {
+      clearPressTimer();
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onCancel);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dragArmed, content, title, photoIds]);
+  }, [chipArmed, content, title, photoIds]);
 
   const handleSaveKey = () => {
     if (!keyInput.trim()) {
@@ -650,7 +666,6 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
           />
           <textarea
             ref={textAreaRef}
-            data-editor="story"
             value={content}
             onChange={(e) => markDirty(title, e.target.value, photoIds)}
             onSelect={trackCursor}
@@ -658,35 +673,45 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
             onKeyUp={trackCursor}
             placeholder="스토리를 쓰거나 AI로 생성해보세요…"
             rows={8}
-            className={`w-full p-2 border rounded text-sm resize-y focus:outline-none focus:ring-2 ${
-              dragView?.overEditor
-                ? 'border-blue-500 ring-2 ring-blue-300'
-                : 'border-gray-300 focus:ring-blue-500'
-            }`}
+            className="w-full p-2 border border-gray-300 rounded text-sm resize-y focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
           {photoIds.length > 0 && (
             <div>
               <p className="text-[11px] text-gray-500 mb-1.5">
-                📷 사진 칩을 끌어다 본문·미리보기에 놓으세요 (탭 = 커서 위치에 삽입)
+                📷 탭하면 커서 위치에 삽입 · 길게 눌러 끌면 순서 변경
               </p>
-              <div className="flex gap-1.5 overflow-x-auto pb-1">
+              <div
+                className="flex gap-1.5 overflow-x-auto pb-1"
+                onContextMenu={(e) => e.preventDefault()}
+              >
                 {photoIds.map((id, i) => (
-                  <div
-                    key={id}
-                    role="button"
-                    aria-label={`${i + 1}번 사진 칩`}
-                    onPointerDown={(e) => beginChipDrag(e, i + 1, null)}
-                    className="relative shrink-0 rounded overflow-hidden cursor-grab active:cursor-grabbing select-none"
-                    style={{ touchAction: 'none' }}
-                  >
-                    {thumbs.get(id) ? (
-                      <img src={thumbs.get(id)} alt="" draggable={false} className="w-14 h-14 object-cover" />
-                    ) : (
-                      <div className="w-14 h-14 bg-gray-100 animate-pulse" />
+                  <div key={id} className="flex items-center shrink-0">
+                    {dragView && dragView.overId === id && dragView.side < 0 && (
+                      <div className="w-1 self-stretch bg-blue-500 rounded-full mx-0.5" />
                     )}
-                    <span className="absolute bottom-0.5 left-0.5 min-w-5 h-5 px-1 bg-blue-600 text-white text-[11px] rounded-full flex items-center justify-center font-bold">
-                      {i + 1}
-                    </span>
+                    <div
+                      role="button"
+                      aria-label={`${i + 1}번 사진 칩 (탭 삽입, 길게 눌러 순서 변경)`}
+                      data-chip={id}
+                      onPointerDown={(e) => beginChipPress(e, i + 1)}
+                      onContextMenu={(e) => e.preventDefault()}
+                      className={`relative rounded overflow-hidden cursor-grab active:cursor-grabbing select-none transition-transform ${
+                        dragView?.armedId === id ? 'ring-2 ring-blue-500 scale-110' : ''
+                      }`}
+                      style={{ touchAction: 'pan-x', WebkitTouchCallout: 'none', userSelect: 'none' }}
+                    >
+                      {thumbs.get(id) ? (
+                        <img src={thumbs.get(id)} alt="" draggable={false} className="w-14 h-14 object-cover" />
+                      ) : (
+                        <div className="w-14 h-14 bg-gray-100 animate-pulse" />
+                      )}
+                      <span className="absolute bottom-0.5 left-0.5 min-w-5 h-5 px-1 bg-blue-600 text-white text-[11px] rounded-full flex items-center justify-center font-bold">
+                        {i + 1}
+                      </span>
+                    </div>
+                    {dragView && dragView.overId === id && dragView.side > 0 && (
+                      <div className="w-1 self-stretch bg-blue-500 rounded-full mx-0.5" />
+                    )}
                   </div>
                 ))}
               </div>
@@ -750,32 +775,28 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
               })}
             </div>
             {photoIds.length > 1 && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {photoIds.map((id, i) => (
-                  <span key={id} className="inline-flex items-center gap-1 text-xs bg-gray-100 rounded-full pl-2.5 pr-1 py-1">
-                    {i + 1}번
-                    <button onClick={() => movePhoto(id, -1)} aria-label="앞으로" className="px-1 text-blue-600">◀</button>
-                    <button onClick={() => movePhoto(id, 1)} aria-label="뒤로" className="px-1 text-blue-600">▶</button>
-                  </span>
-                ))}
-              </div>
+              <p className="mt-2 text-[11px] text-gray-400">
+                칩을 길게 눌러 끌면 위 순서가 바뀝니다
+              </p>
             )}
           </div>
         )}
 
-        {/* 공유 미리보기 (문단 사이 드롭으로 마커 배치) */}
+        {/* 공유 미리보기 */}
         {(title.trim() || content.trim()) && (
           <div className="bg-white rounded-lg border border-gray-100 p-3">
             <p className="text-xs text-gray-500 font-medium mb-2">공유 미리보기 (Band·카페 붙여넣기용)</p>
-            <div className="bg-gray-50 rounded p-3 max-h-80 overflow-y-auto">
+            <div
+              className="bg-gray-50 rounded p-3 max-h-80 overflow-y-auto"
+              onContextMenu={(e) => e.preventDefault()}
+              style={{ WebkitTouchCallout: 'none' }}
+            >
               <p className="text-xs text-gray-500">{formatDate(date)}</p>
               <p className="text-base font-bold text-gray-800 mb-2">『{title.trim() || '무제'}』</p>
               <StoryBlocks
                 content={content}
                 photoIds={photoIds}
                 thumbs={thumbs}
-                dragGap={dragView?.overGap ?? null}
-                onMarkerDown={beginChipDrag}
               />
               <p className="text-xs text-gray-400 mt-2">#하루기록 #오늘의기록</p>
             </div>
@@ -824,64 +845,43 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
   );
 }
 
-// 미리보기 블록 렌더: 텍스트 문단 + 사진 마커 칩 + 문단 사이 드롭 갭
+// 미리보기 블록 렌더: 텍스트 문단 + 사진 마커 썸네일 (정적 표시)
 function StoryBlocks({
   content,
   photoIds,
   thumbs,
-  dragGap,
-  onMarkerDown,
 }: {
   content: string;
   photoIds: string[];
   thumbs: Map<string, string>;
-  dragGap: number | null;
-  onMarkerDown: (e: React.PointerEvent, photoNumber: number, occurrence: number | null) => void;
 }) {
   const blocks = parseStoryBlocks(content);
-  let occurrence = -1;
-  const gapClass = (i: number) =>
-    `rounded transition-all ${dragGap === i ? 'h-6 bg-blue-200' : dragGap !== null ? 'h-3 bg-blue-50' : 'h-1'}`;
   return (
-    <div className="text-sm text-gray-800">
+    <div className="text-sm text-gray-800 space-y-2">
       {blocks.length === 0 && (
         <p className="text-gray-400">본문이 비어 있습니다.</p>
       )}
-      <div data-gap={0} className={gapClass(0)} />
       {blocks.map((b, i) => {
         if (b.kind === 'text') {
           return (
-            <div key={i}>
-              <p className="whitespace-pre-wrap">{b.text}</p>
-              <div data-gap={i + 1} className={gapClass(i + 1)} />
+            <p key={i} className="whitespace-pre-wrap">{b.text}</p>
+          );
+        }
+        const entryId = photoIds[b.index - 1];
+        const thumb = entryId ? thumbs.get(entryId) : undefined;
+        if (!thumb) {
+          return (
+            <div key={i} className="rounded bg-amber-50 border border-amber-300 text-amber-700 text-xs p-2">
+              ⚠️ [사진{b.index}] — 선택된 사진이 없습니다
             </div>
           );
         }
-        occurrence += 1;
-        const occ = occurrence;
-        const entryId = photoIds[b.index - 1];
-        const thumb = entryId ? thumbs.get(entryId) : undefined;
         return (
-          <div key={i}>
-            {!thumb ? (
-              <div className="rounded bg-amber-50 border border-amber-300 text-amber-700 text-xs p-2">
-                ⚠️ [사진{b.index}] — 선택된 사진이 없습니다
-              </div>
-            ) : (
-              <div
-                role="button"
-                aria-label={`${b.index}번 사진 마커 (드래그하여 이동)`}
-                onPointerDown={(e) => onMarkerDown(e, b.index, occ)}
-                className="relative rounded overflow-hidden cursor-grab active:cursor-grabbing select-none"
-                style={{ touchAction: 'none' }}
-              >
-                <img src={thumb} alt={`${b.index}번 사진`} draggable={false} className="w-full max-h-56 object-cover" />
-                <span className="absolute top-1 left-1 px-1.5 h-5 bg-blue-600 text-white text-[11px] rounded-full flex items-center font-bold">
-                  사진 {b.index} ⠿
-                </span>
-              </div>
-            )}
-            <div data-gap={i + 1} className={gapClass(i + 1)} />
+          <div key={i} className="relative rounded overflow-hidden">
+            <img src={thumb} alt={`${b.index}번 사진`} draggable={false} className="w-full max-h-56 object-cover" />
+            <span className="absolute top-1 left-1 px-1.5 h-5 bg-blue-600 text-white text-[11px] rounded-full flex items-center font-bold">
+              사진 {b.index}
+            </span>
           </div>
         );
       })}
