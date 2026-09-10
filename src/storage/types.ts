@@ -8,6 +8,7 @@ export interface Entry {
   duration: number; // 녹음 길이(초), audio만
   createdAt: number; // timestamp
   updatedAt: number; // timestamp
+  sortOrder?: number; // 사진 순서 (없으면 createdAt 대체)
 }
 
 export type EntryType = Entry['type'];

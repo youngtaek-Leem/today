@@ -2,6 +2,12 @@ import { v4 as uuidv4 } from 'uuid';
 import { db } from './db';
 import type { Entry, EntryType, DateSummary } from './types';
 
+/** 저장 1회당 사진 최대 선택 수 */
+export const MAX_PHOTOS_PER_SAVE = 20;
+
+/** 달력 썸네일 변환 상한 (성능 방어) */
+const MAX_SUMMARY_THUMBNAILS = 4;
+
 function today(): string {
   const d = new Date();
   const yyyy = d.getFullYear();
@@ -74,9 +80,11 @@ export async function addEntry(
     thumbnail?: Blob | null;
     duration?: number;
     date?: string;
+    sortOrder?: number;
   },
 ): Promise<string> {
   const id = uuidv4();
+  const timestamp = now();
   const entry: Entry = {
     id,
     date: data.date || today(),
@@ -85,8 +93,9 @@ export async function addEntry(
     blob: data.blob || new Blob(),
     thumbnail: data.thumbnail ?? null,
     duration: data.duration || 0,
-    createdAt: now(),
-    updatedAt: now(),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    sortOrder: data.sortOrder ?? timestamp,
   };
   await db.entries.add(entry);
   return id;
@@ -97,12 +106,17 @@ export async function getEntry(id: string): Promise<Entry | undefined> {
 }
 
 export async function getEntriesByDate(date: string): Promise<Entry[]> {
-  return db.entries.where('date').equals(date).toArray();
+  const entries = await db.entries.where('date').equals(date).toArray();
+  return entries.sort(
+    (a, b) => (a.sortOrder ?? a.createdAt) - (b.sortOrder ?? b.createdAt),
+  );
 }
 
 export async function updateEntry(
   id: string,
-  updates: Partial<Pick<Entry, 'content' | 'blob' | 'thumbnail' | 'duration'>>,
+  updates: Partial<
+    Pick<Entry, 'content' | 'blob' | 'thumbnail' | 'duration' | 'sortOrder'>
+  >,
 ): Promise<void> {
   await db.entries.update(id, {
     ...updates,
@@ -127,6 +141,7 @@ export async function getDateSummary(date: string): Promise<DateSummary> {
 
   const thumbnails: string[] = [];
   for (const entry of entries) {
+    if (thumbnails.length >= MAX_SUMMARY_THUMBNAILS) break;
     if (entry.type === 'photo' && entry.thumbnail) {
       thumbnails.push(await blobToDataURL(entry.thumbnail));
     } else if (entry.type === 'memo' && thumbnails.length < 3) {

@@ -1,9 +1,12 @@
 import { useState, useEffect } from 'react';
 import {
   getEntriesByDate,
+  addEntry,
   updateEntry,
   deleteEntry,
   blobToDataURL,
+  createThumbnail,
+  MAX_PHOTOS_PER_SAVE,
 } from '../storage/service';
 import type { Entry } from '../storage/types';
 
@@ -43,12 +46,71 @@ export default function DetailPage({ date, onBack }: DetailPageProps) {
     input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) return;
-      const { createThumbnail } = await import('../storage/service');
-      const thumbnail = await createThumbnail(file);
-      await updateEntry(id, { blob: file, thumbnail });
-      await loadEntries();
+      try {
+        const thumbnail = await createThumbnail(file);
+        await updateEntry(id, { blob: file, thumbnail });
+        await loadEntries();
+      } catch (err) {
+        console.error('사진 교체 실패:', err);
+        alert('사진 교체에 실패했습니다.');
+      }
     };
     input.click();
+  };
+
+  const handleAddPhotos = async () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.multiple = true;
+    input.onchange = async () => {
+      const files = Array.from(input.files ?? []).filter((f) =>
+        f.type.startsWith('image/'),
+      );
+      if (files.length === 0) return;
+      const accepted = files.slice(0, MAX_PHOTOS_PER_SAVE);
+      if (files.length > MAX_PHOTOS_PER_SAVE) {
+        alert(
+          `한 번에 최대 ${MAX_PHOTOS_PER_SAVE}장까지 추가할 수 있어 ${accepted.length}장만 추가됩니다.`,
+        );
+      }
+      const baseOrder =
+        entries.reduce(
+          (max, e) => Math.max(max, e.sortOrder ?? e.createdAt),
+          0,
+        ) || Date.now();
+      let failed = 0;
+      for (let i = 0; i < accepted.length; i++) {
+        try {
+          const thumbnail = await createThumbnail(accepted[i]);
+          await addEntry('photo', {
+            blob: accepted[i],
+            thumbnail,
+            date,
+            sortOrder: baseOrder + i + 1,
+          });
+        } catch (err) {
+          console.error('사진 추가 실패:', err);
+          failed++;
+        }
+      }
+      await loadEntries();
+      if (failed > 0) alert(`${failed}장의 사진 추가에 실패했습니다.`);
+    };
+    input.click();
+  };
+
+  const handleMovePhoto = async (id: string, direction: -1 | 1) => {
+    const photos = entries.filter((e) => e.type === 'photo');
+    const index = photos.findIndex((e) => e.id === id);
+    const target = photos[index + direction];
+    if (index < 0 || !target) return;
+    const current = photos[index];
+    const currentOrder = current.sortOrder ?? current.createdAt;
+    const targetOrder = target.sortOrder ?? target.createdAt;
+    await updateEntry(current.id, { sortOrder: targetOrder });
+    await updateEntry(target.id, { sortOrder: currentOrder });
+    await loadEntries();
   };
 
   const handleReplaceAudio = async (id: string) => {
@@ -137,6 +199,12 @@ export default function DetailPage({ date, onBack }: DetailPageProps) {
           ← 달력
         </button>
         <h2 className="text-lg font-bold text-gray-800">{formatDate(date)}</h2>
+        <button
+          onClick={handleAddPhotos}
+          className="ml-auto text-sm text-blue-600 font-medium"
+        >
+          📷 사진 추가
+        </button>
       </div>
 
       {/* 기록 목록 */}
@@ -237,12 +305,26 @@ export default function DetailPage({ date, onBack }: DetailPageProps) {
                 </button>
               )}
               {entry.type === 'photo' && (
-                <button
-                  onClick={() => handleReplacePhoto(entry.id)}
-                  className="text-xs text-blue-500 font-medium"
-                >
-                  🔄 사진 교체
-                </button>
+                <>
+                  <button
+                    onClick={() => handleMovePhoto(entry.id, -1)}
+                    className="text-xs text-blue-500 font-medium"
+                  >
+                    ◀ 앞으로
+                  </button>
+                  <button
+                    onClick={() => handleMovePhoto(entry.id, 1)}
+                    className="text-xs text-blue-500 font-medium"
+                  >
+                    뒤로 ▶
+                  </button>
+                  <button
+                    onClick={() => handleReplacePhoto(entry.id)}
+                    className="text-xs text-blue-500 font-medium"
+                  >
+                    🔄 사진 교체
+                  </button>
+                </>
               )}
               {entry.type === 'audio' && (
                 <button

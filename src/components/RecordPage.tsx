@@ -1,25 +1,66 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useRecorder } from '../hooks/useRecorder';
-import { addEntry, createThumbnail } from '../storage/service';
+import {
+  addEntry,
+  createThumbnail,
+  MAX_PHOTOS_PER_SAVE,
+} from '../storage/service';
 
 type InputMode = 'memo' | 'photo' | 'audio';
 
 export default function RecordPage() {
   const [mode, setMode] = useState<InputMode>('memo');
   const [memoText, setMemoText] = useState('');
-  const [photoFile, setPhotoFile] = useState<File | null>(null);
-  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [photoFiles, setPhotoFiles] = useState<File[]>([]);
+  const [photoPreviews, setPhotoPreviews] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recorder = useRecorder();
 
+  // 미리보기 object URL 정리 (메모리 누수 방지)
+  useEffect(() => {
+    return () => {
+      for (const url of photoPreviews) URL.revokeObjectURL(url);
+    };
+  }, [photoPreviews]);
+
+  const clearPhotoSelection = () => {
+    for (const url of photoPreviews) URL.revokeObjectURL(url);
+    setPhotoFiles([]);
+    setPhotoPreviews([]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const removePhotoAt = (index: number) => {
+    URL.revokeObjectURL(photoPreviews[index]);
+    setPhotoFiles((prev) => prev.filter((_, i) => i !== index));
+    setPhotoPreviews((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setPhotoFile(file);
-      setPhotoPreview(URL.createObjectURL(file));
+    const files = Array.from(e.target.files ?? []).filter((f) =>
+      f.type.startsWith('image/'),
+    );
+    if (files.length === 0) return;
+    const remaining = MAX_PHOTOS_PER_SAVE - photoFiles.length;
+    if (remaining <= 0) {
+      alert(`한 번에 최대 ${MAX_PHOTOS_PER_SAVE}장까지 저장할 수 있습니다.`);
+      e.target.value = '';
+      return;
     }
+    const accepted = files.slice(0, remaining);
+    if (files.length > remaining) {
+      alert(
+        `한 번에 최대 ${MAX_PHOTOS_PER_SAVE}장까지 저장할 수 있어 ${accepted.length}장만 추가됩니다.`,
+      );
+    }
+    setPhotoFiles((prev) => [...prev, ...accepted]);
+    setPhotoPreviews((prev) => [
+      ...prev,
+      ...accepted.map((f) => URL.createObjectURL(f)),
+    ]);
+    e.target.value = '';
   };
 
   const handleSave = async () => {
@@ -34,18 +75,32 @@ export default function RecordPage() {
         await addEntry('memo', { content: memoText.trim() });
         setMemoText('');
       } else if (mode === 'photo') {
-        if (!photoFile) {
+        if (photoFiles.length === 0) {
           alert('사진을 선택해주세요.');
           setSaving(false);
           return;
         }
-        const thumbnail = await createThumbnail(photoFile);
-        await addEntry('photo', {
-          blob: photoFile,
-          thumbnail,
-        });
-        setPhotoFile(null);
-        setPhotoPreview(null);
+        let failed = 0;
+        const baseOrder = Date.now();
+        for (let i = 0; i < photoFiles.length; i++) {
+          try {
+            const thumbnail = await createThumbnail(photoFiles[i]);
+            await addEntry('photo', {
+              blob: photoFiles[i],
+              thumbnail,
+              sortOrder: baseOrder + i,
+            });
+          } catch (photoErr) {
+            console.error('사진 저장 실패:', photoErr);
+            failed++;
+          }
+        }
+        clearPhotoSelection();
+        if (failed > 0) {
+          alert(`${failed}장의 사진 저장에 실패했습니다.`);
+          setSaving(false);
+          return;
+        }
       } else if (mode === 'audio') {
         if (!recorder.audioBlob) {
           alert('녹음을 먼저 완료해주세요.');
@@ -116,6 +171,7 @@ export default function RecordPage() {
               ref={fileInputRef}
               type="file"
               accept="image/*"
+              multiple
               capture="environment"
               onChange={handlePhotoSelect}
               className="hidden"
@@ -132,6 +188,7 @@ export default function RecordPage() {
                   const input = fileInputRef.current;
                   if (input) {
                     input.removeAttribute('capture');
+                    input.setAttribute('multiple', '');
                     input.click();
                     input.setAttribute('capture', 'environment');
                   }
@@ -141,22 +198,40 @@ export default function RecordPage() {
                 🖼️ 갤러리에서 선택
               </button>
             </div>
-            {photoPreview && (
-              <div className="relative rounded-lg overflow-hidden">
-                <img
-                  src={photoPreview}
-                  alt="미리보기"
-                  className="w-full h-64 object-cover"
-                />
-                <button
-                  onClick={() => {
-                    setPhotoFile(null);
-                    setPhotoPreview(null);
-                  }}
-                  className="absolute top-2 right-2 w-8 h-8 bg-black/50 text-white rounded-full flex items-center justify-center"
-                >
-                  ✕
-                </button>
+            <p className="text-xs text-gray-500 text-center">
+              한 번에 최대 {MAX_PHOTOS_PER_SAVE}장 · 현재 {photoFiles.length}장
+            </p>
+            {photoPreviews.length > 0 && (
+              <div>
+                <div className="grid grid-cols-3 gap-2">
+                  {photoPreviews.map((preview, i) => (
+                    <div
+                      key={`${preview}-${i}`}
+                      className="relative rounded-lg overflow-hidden"
+                    >
+                      <img
+                        src={preview}
+                        alt={`미리보기 ${i + 1}`}
+                        className="w-full h-24 object-cover"
+                      />
+                      <button
+                        onClick={() => removePhotoAt(i)}
+                        aria-label={`${i + 1}번째 사진 제거`}
+                        className="absolute top-1 right-1 w-6 h-6 bg-black/50 text-white rounded-full flex items-center justify-center text-xs"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                {photoFiles.length > 1 && (
+                  <button
+                    onClick={clearPhotoSelection}
+                    className="mt-2 w-full py-2 text-sm text-gray-500 underline"
+                  >
+                    전체 지우기
+                  </button>
+                )}
               </div>
             )}
           </div>
