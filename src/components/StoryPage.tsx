@@ -340,6 +340,12 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
                 )}
               </div>
               <p className="text-[11px] text-gray-400">키는 이 기기 브라우저에만 저장되며 서버로 전송되지 않습니다.</p>
+              <a
+                href="ai-test.html"
+                className="block text-[11px] text-violet-600 underline"
+              >
+                🔧 연결 테스트 페이지 열기 (실패 원인 진단용)
+              </a>
             </div>
           )}
         </div>

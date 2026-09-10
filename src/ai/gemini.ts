@@ -5,7 +5,7 @@
  */
 
 const KEY_STORAGE = 'gemini_api_key';
-const MODEL = 'gemini-3.1-flash-lite';
+const MODEL = 'gemini-3.6-flash';
 const MAX_AI_PHOTOS = 5;
 
 export function getApiKey(): string {
