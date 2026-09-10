@@ -100,8 +100,35 @@ function buildPrompt(memos: string[]): string {
 제목: <15자 이내 한 줄 제목>
 본문:
 <5~10문장 본문, 해시태그 금지>
+<2~3문장마다 빈 줄로 단락을 나눌 것>
 
 ${memoBlock}`;
+}
+
+/**
+ * 단락 정리: 빈 줄이 없는 본문을 문장 단위로 쪼개 2~3문장씩 단락으로 묶음.
+ * 모델이 줄바꿈 없이 한 덩어리로 출력해도 읽기 형태로 보정.
+ */
+export function formatParagraphs(text: string): string {
+  const paragraphs = text
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  // 이미 단락 구분이 있으면 정리만 하고 반환
+  if (paragraphs.length > 1) return paragraphs.join('\n\n');
+  const single = paragraphs[0] ?? text.trim();
+  if (!single) return '';
+  // 종결 어미(. ! ? … 。！？ + 닫는 따옴표) 뒤에서 문장 분리
+  const sentences = single
+    .split(/(?<=[.!?…。！？]['"’”」]*)\s+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (sentences.length <= 1) return single;
+  const grouped: string[] = [];
+  for (let i = 0; i < sentences.length; i += 3) {
+    grouped.push(sentences.slice(i, i + 3).join(' '));
+  }
+  return grouped.join('\n\n');
 }
 
 function parseDraft(raw: string): StoryDraft {
@@ -111,14 +138,14 @@ function parseDraft(raw: string): StoryDraft {
   if (titleMatch && bodyMatch && bodyMatch.index !== undefined) {
     const title = titleMatch[1].trim();
     const content = text.slice(bodyMatch.index + bodyMatch[0].length).trim();
-    if (title && content) return { title, content };
+    if (title && content) return { title, content: formatParagraphs(content) };
   }
   // 폴백: 첫 줄을 제목, 나머지를 본문
   const lines = text.split('\n').filter((l) => l.trim().length > 0);
   if (lines.length >= 2) {
-    return { title: lines[0].replace(/^제목\s*[:：]\s*/, '').trim(), content: lines.slice(1).join('\n').trim() };
+    return { title: lines[0].replace(/^제목\s*[:：]\s*/, '').trim(), content: formatParagraphs(lines.slice(1).join('\n').trim()) };
   }
-  return { title: '오늘의 기록', content: text };
+  return { title: '오늘의 기록', content: formatParagraphs(text) };
 }
 
 interface GenerateResponse {
@@ -233,12 +260,12 @@ export async function continueStory(
   if (!key) throw new Error('Gemini API 키가 없습니다. 설정에서 키를 입력해주세요.');
   const parts: TextPart[] = [
     {
-      text: `아래는 하루 기록 스토리 본문의 앞부분이다. 문체와 흐름을 유지해 바로 이어지는 뒷부분만 3~7문장으로 써라. 제목·머리말 없이 본문 문장만 출력하라.\n\n[앞부분]\n${prevContent}`,
+      text: `아래는 하루 기록 스토리 본문의 앞부분이다. 문체와 흐름을 유지해 바로 이어지는 뒷부분만 3~7문장으로 써라. 제목·머리말 없이 본문 문장만 출력하고, 2~3문장마다 빈 줄로 단락을 나눠라.\n\n[앞부분]\n${prevContent}`,
     },
   ];
   const result = await toResult(await callGenerate(key, parts, 2048, signal));
   // 이어쓰기 결과는 파싱 없이 본문 그대로 사용
-  return { ...result, title: '', content: result.content };
+  return { ...result, title: '', content: formatParagraphs(result.content) };
 }
 
 /**

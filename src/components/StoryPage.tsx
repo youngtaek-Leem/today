@@ -17,6 +17,7 @@ import {
   generateStory,
   continueStory,
   buildLocalDraft,
+  formatParagraphs,
 } from '../ai/gemini';
 
 function toLocalDateString(d: Date): string {
@@ -432,6 +433,14 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
             rows={8}
             className="w-full p-2 border border-gray-300 rounded text-sm resize-y focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
+          <div className="flex gap-2">
+            <button
+              onClick={() => markDirty(title, formatParagraphs(content), photoIds)}
+              className="px-3 py-1.5 bg-gray-100 text-gray-600 text-xs rounded active:bg-gray-200"
+            >
+              📝 단락 정리
+            </button>
+          </div>
           <div className="flex gap-2">
             <button
               onClick={handleSave}
