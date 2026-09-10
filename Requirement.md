@@ -21,6 +21,9 @@
 | FR9 | 메모 텍스트 수정 | P1 |
 | FR10 | IndexedDB 용량 사용량 표시 | P2 |
 | FR11 | 오래된 기록 정리 기능 | P2 |
+| FR12 | AI 스토리 생성: 날짜별 메모·사진을 Gemini(BYOK 직접호출)로 재구성, 기본 초안 폴백 | P0 |
+| FR13 | 스토리 편집·저장: 제목/본문 수정, 공유 사진 선택·순서 지정, 하루 1개 저장 | P0 |
+| FR14 | 수동 공유: 공유 텍스트 복사, 시스템 공유(텍스트+사진), 텍스트 파일 다운로드 | P0 |
 
 ## 3. 기술 스택 및 제약 조건
 
@@ -51,6 +54,8 @@
 | M3 | Calendar Module | 달력 렌더링, 날짜별 썸네일 요약 표시 | CalendarPage 컴포넌트 | M1 | 타입 체크 + 빌드 통과 | 완료 |
 | M4 | Detail Module | 특정 날짜 기록 목록, 재생/확대/수정/삭제 | DetailPage 컴포넌트 | M1 | 타입 체크 + 빌드 통과 | 완료 |
 | M5 | PWA Shell | 서비스 워커, 오프라인 캐싱, 설치, GitHub Pages 배포 | vite.config.ts PWA 설정, gh-pages 스크립트 | M1~M4 | 타입 체크 + 빌드 통과 (PWA manifest/sw 생성 확인) | 완료 |
+| M6 | Story Module | 날짜별 기록으로 스토리 초안/AI 생성, 편집·사진 선택·순서, 하루 1개 저장 | StoryPage 컴포넌트, gemini 모듈, stories 테이블 | M1 | 타입 체크 + 빌드 통과 | 완료 |
+| M7 | Share Module | 공유 텍스트 템플릿, 복사·시스템 공유·파일 다운로드 (수동 공유) | buildShareText, StoryPage 공유 액션 | M6 | 타입 체크 + 빌드 통과, 실기기 공유시트 확인 | 완료 |
 
 ## 5. 데이터 스키마
 
@@ -63,8 +68,15 @@ interface Entry {
   blob: Blob;           // 사진/녹음 바이너리 (photo, audio 타입)
   thumbnail: Blob;      // 사진 썸네일, 녹음은 null
   duration: number;     // 녹음 길이(초), audio 타입만
-  createdAt: number;    // timestamp
-  updatedAt: number;    // timestamp
+interface Story {
+  id: string;           // UUID
+  date: string;         // YYYY-MM-DD (하루 1개)
+  title: string;
+  content: string;
+  photoIds: string[];   // 사용 사진 Entry id (순서 = 공유 순서)
+  source: 'local' | 'ai';
+  createdAt: number;
+  updatedAt: number;
 }
 ```
 
@@ -85,3 +97,4 @@ M1 (Storage) → M2 (Record) → M3 (Calendar) → M4 (Detail) → M5 (PWA + 배
 |------|-----------|------|
 | 2026-07-14 | 최초 작성 | 프로젝트 시작, 계획 승인 |
 | 2026-09-10 | FR2/FR4 변경: 사진 1회 저장 최대 20장, 사진 추가·순서 변경 지원 | 스토리 생성용 다사진 기록 요청 |
+| 2026-09-10 | M6/M7 추가: AI 스토리 생성·편집·수동 공유 (FR12~FR14) | Phase 2 개발 |

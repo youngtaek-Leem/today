@@ -2,8 +2,9 @@ import { useState } from 'react';
 import RecordPage from './components/RecordPage';
 import CalendarPage from './components/CalendarPage';
 import DetailPage from './components/DetailPage';
+import StoryPage from './components/StoryPage';
 
-type Page = 'record' | 'calendar' | 'detail';
+type Page = 'record' | 'calendar' | 'detail' | 'story';
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<Page>('calendar');
@@ -33,6 +34,7 @@ export default function App() {
             <CalendarPage onSelectDate={handleSelectDate} />
           )}
           {currentPage === 'record' && <RecordPage />}
+          {currentPage === 'story' && <StoryPage initialDate={selectedDate} />}
         </div>
       )}
 
@@ -64,6 +66,16 @@ export default function App() {
             }`}
           >
             ✍️ 기록
+          </button>
+          <button
+            onClick={() => setCurrentPage('story')}
+            className={`flex-1 py-3 text-sm font-medium transition-colors ${
+              currentPage === 'story'
+                ? 'text-blue-600 border-t-2 border-blue-600'
+                : 'text-gray-500'
+            }`}
+          >
+            📖 스토리
           </button>
         </nav>
       )}

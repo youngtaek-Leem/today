@@ -13,6 +13,17 @@ export interface Entry {
 
 export type EntryType = Entry['type'];
 
+export interface Story {
+  id: string;
+  date: string; // YYYY-MM-DD (하루 1개)
+  title: string;
+  content: string; // 스토리 본문 (마크다운 아닌 일반 텍스트)
+  photoIds: string[]; // 사용 사진 Entry id (순서 = 공유 순서)
+  source: 'local' | 'ai'; // 초안 생성 방식
+  createdAt: number; // timestamp
+  updatedAt: number; // timestamp
+}
+
 export interface DateSummary {
   date: string;
   memoCount: number;

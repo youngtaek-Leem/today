@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { db } from './db';
-import type { Entry, EntryType, DateSummary } from './types';
+import type { Entry, EntryType, DateSummary, Story } from './types';
 
 /** 저장 1회당 사진 최대 선택 수 */
 export const MAX_PHOTOS_PER_SAVE = 20;
@@ -173,4 +173,60 @@ export async function getStorageUsage(): Promise<number> {
     return estimate.usage ?? 0;
   }
   return 0;
+}
+
+// === Story Operations (하루 1개 upsert) ===
+
+export async function getStoryByDate(date: string): Promise<Story | undefined> {
+  const stories = await db.stories.where('date').equals(date).toArray();
+  return stories.sort((a, b) => b.updatedAt - a.updatedAt)[0];
+}
+
+export async function saveStory(
+  date: string,
+  data: { title: string; content: string; photoIds: string[]; source: Story['source'] },
+): Promise<Story> {
+  const existing = await getStoryByDate(date);
+  const timestamp = now();
+  if (existing) {
+    const updated: Story = {
+      ...existing,
+      title: data.title,
+      content: data.content,
+      photoIds: data.photoIds,
+      source: data.source,
+      updatedAt: timestamp,
+    };
+    await db.stories.put(updated);
+    return updated;
+  }
+  const created: Story = {
+    id: uuidv4(),
+    date,
+    title: data.title,
+    content: data.content,
+    photoIds: data.photoIds,
+    source: data.source,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  await db.stories.add(created);
+  return created;
+}
+
+export async function deleteStory(id: string): Promise<void> {
+  await db.stories.delete(id);
+}
+
+/**
+ * 공유용 텍스트 템플릿 (Band/카페 붙여넣기)
+ */
+export function buildShareText(
+  date: string,
+  title: string,
+  content: string,
+): string {
+  const [y, m, d] = date.split('-');
+  const dateLine = `🗓 ${y}년 ${parseInt(m)}월 ${parseInt(d)}일 하루 기록`;
+  return `${dateLine}\n\n『${title.trim() || '무제'}』\n\n${content.trim()}\n\n#하루기록 #오늘의기록`;
 }
