@@ -28,6 +28,29 @@ export function getModelName(): string {
   return MODEL;
 }
 
+// === 글쓰기 스타일 지시 ===
+
+const STYLE_STORAGE = 'gemini_style';
+
+/** 프리셋 지시문 (빈 문자열 = 기본 문체) */
+export const STYLE_PRESETS: { label: string; instruction: string }[] = [
+  { label: '기본', instruction: '' },
+  { label: '따뜻한 일기체', instruction: '따뜻하고 담백한 일기체로' },
+  { label: '부드러운 톤', instruction: '부드럽고 다정한 톤으로' },
+  { label: '아이에게 말하듯', instruction: '어린아이에게 말하듯 쉽고 다정하게' },
+  { label: '유머러스하게', instruction: '유머러스하고 재치있게' },
+  { label: '시적으로', instruction: '시적이고 감성적으로' },
+  { label: '담백·간결하게', instruction: '담백하고 간결하게' },
+];
+
+export function getStyle(): string {
+  return localStorage.getItem(STYLE_STORAGE) ?? '';
+}
+
+export function setStyle(instruction: string): void {
+  localStorage.setItem(STYLE_STORAGE, instruction.trim());
+}
+
 /**
  * AI 전송용 이미지 축소 (긴 변 기준)
  */
@@ -90,13 +113,14 @@ interface TextPart {
   text: string;
 }
 
-function buildPrompt(memos: string[]): string {
+function buildPrompt(memos: string[], style?: string): string {
   const memoBlock =
     memos.length > 0
       ? memos.map((m, i) => `[메모 ${i + 1}]\n${m}`).join('\n\n')
       : '(메모 없음 — 사진 분위기 중심으로 작성)';
-  return `너는 하루 기록 앱의 스토리 작가다. 아래 메모와 사진들을 보고 그날의 하루를 따뜻하고 담백한 일기체로 재구성하라.
-요청 형식(반드시 지킬 것):
+  const styleLine = style?.trim() ? `글쓰기 방향: ${style.trim()}\n` : '';
+  return `너는 하루 기록 앱의 스토리 작가다. 아래 메모와 사진들을 보고 그날의 하루를 재구성하라.
+${styleLine}요청 형식(반드시 지킬 것):
 제목: <15자 이내 한 줄 제목>
 본문:
 <5~10문장 본문, 해시태그 금지>
@@ -230,6 +254,7 @@ export async function generateStory(
   memos: string[],
   photos: Blob[],
   signal?: AbortSignal,
+  style?: string,
 ): Promise<StoryResult> {
   const key = getApiKey();
   if (!key) throw new Error('Gemini API 키가 없습니다. 설정에서 키를 입력해주세요.');
@@ -242,7 +267,7 @@ export async function generateStory(
   }
 
   const parts: (TextPart | InlinePart)[] = [
-    { text: buildPrompt(memos) },
+    { text: buildPrompt(memos, style) },
     ...imageParts,
   ];
 
@@ -255,12 +280,14 @@ export async function generateStory(
 export async function continueStory(
   prevContent: string,
   signal?: AbortSignal,
+  style?: string,
 ): Promise<StoryResult> {
   const key = getApiKey();
   if (!key) throw new Error('Gemini API 키가 없습니다. 설정에서 키를 입력해주세요.');
+  const styleLine = style?.trim() ? `글쓰기 방향: ${style.trim()}\n` : '';
   const parts: TextPart[] = [
     {
-      text: `아래는 하루 기록 스토리 본문의 앞부분이다. 문체와 흐름을 유지해 바로 이어지는 뒷부분만 3~7문장으로 써라. 제목·머리말 없이 본문 문장만 출력하고, 2~3문장마다 빈 줄로 단락을 나눠라.\n\n[앞부분]\n${prevContent}`,
+      text: `아래는 하루 기록 스토리 본문의 앞부분이다. 문체와 흐름을 유지해 바로 이어지는 뒷부분만 3~7문장으로 써라. ${styleLine}제목·머리말 없이 본문 문장만 출력하고, 2~3문장마다 빈 줄로 단락을 나눠라.\n\n[앞부분]\n${prevContent}`,
     },
   ];
   const result = await toResult(await callGenerate(key, parts, 2048, signal));

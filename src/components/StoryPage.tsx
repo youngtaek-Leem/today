@@ -6,6 +6,10 @@ import {
   deleteStory,
   buildShareText,
   blobToDataURL,
+  appendPhotoMarkers,
+  parseStoryBlocks,
+  insertMarkerAtGap,
+  moveMarkerToGap,
 } from '../storage/service';
 import type { Entry } from '../storage/types';
 import {
@@ -18,6 +22,9 @@ import {
   continueStory,
   buildLocalDraft,
   formatParagraphs,
+  STYLE_PRESETS,
+  getStyle,
+  setStyle as persistStyle,
 } from '../ai/gemini';
 
 function toLocalDateString(d: Date): string {
@@ -50,10 +57,33 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
     finishReason: string;
     truncated: boolean;
     usage: string;
+    style: string;
   } | null>(null);
+  const [style, setStyle] = useState(getStyle());
+  // 직접 입력 초안 (저장 버튼을 눌러야 실제 지시문으로 반영)
+  const [styleDraft, setStyleDraft] = useState(() =>
+    STYLE_PRESETS.some((p) => p.instruction === getStyle()) ? '' : getStyle(),
+  );
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
+  const cursorRef = useRef<number | null>(null);
+  // 드래그 진행 상태 (ref: 로직용, state: 고스트·강조 렌더용)
+  const dragRef = useRef<{
+    photoNumber: number;
+    occurrence: number | null; // null = 칩트레이(신규 삽입), 숫자 = 미리보기 마커 이동
+    startX: number;
+    startY: number;
+    moved: boolean;
+  } | null>(null);
+  const [dragView, setDragView] = useState<{
+    x: number;
+    y: number;
+    thumb: string | null;
+    overGap: number | null;
+    overEditor: boolean;
+  } | null>(null);
 
   const todayStr = toLocalDateString(new Date());
   const photos = entries.filter((e) => e.type === 'photo');
@@ -121,9 +151,32 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
 
   const handleLocalDraft = () => {
     const draft = buildLocalDraft(memos, photos.length);
-    markDirty(draft.title, draft.content, photos.map((p) => p.id));
+    const ids = photos.map((p) => p.id);
+    markDirty(draft.title, appendPhotoMarkers(draft.content, ids.length), ids);
     setSource('local');
     setGenInfo(null);
+  };
+
+  const updateStyle = (v: string) => {
+    setStyle(v);
+    persistStyle(v);
+    if (!STYLE_PRESETS.some((p) => p.instruction === v)) {
+      setStyleDraft(v);
+    } else {
+      setStyleDraft('');
+    }
+  };
+
+  const handleSaveStyle = () => {
+    if (!styleDraft.trim()) {
+      alert('저장할 지시문을 입력해주세요.');
+      return;
+    }
+    updateStyle(styleDraft.trim());
+  };
+
+  const handleClearStyle = () => {
+    updateStyle('');
   };
 
   const toUsageText = (u: { promptTokens: number; responseTokens: number; totalTokens: number } | null) =>
@@ -147,13 +200,16 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
         memos,
         photos.map((p) => p.blob),
         ctrl.signal,
+        style || undefined,
       );
-      markDirty(result.title, result.content, photos.map((p) => p.id));
+      const ids = photos.map((p) => p.id);
+      markDirty(result.title, appendPhotoMarkers(result.content, ids.length), ids);
       setSource('ai');
       setGenInfo({
         finishReason: result.finishReason,
         truncated: result.truncated,
         usage: toUsageText(result.usage),
+        style: style || '기본',
       });
     } catch (err) {
       if ((err as Error).name === 'AbortError') return;
@@ -174,12 +230,13 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
-      const result = await continueStory(content, ctrl.signal);
+      const result = await continueStory(content, ctrl.signal, style || undefined);
       markDirty(title, `${content.trim()}\n${result.content}`, photoIds);
       setGenInfo({
         finishReason: result.finishReason,
         truncated: result.truncated,
         usage: toUsageText(result.usage),
+        style: style || '기본',
       });
     } catch (err) {
       if ((err as Error).name === 'AbortError') return;
@@ -240,6 +297,124 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
     [next[idx], next[j]] = [next[j], next[idx]];
     markDirty(title, content, next);
   };
+
+  // --- 사진 칩 드래그&드롭 ([사진n] 배치) ---
+
+  const trackCursor = () => {
+    const el = textAreaRef.current;
+    if (el) cursorRef.current = el.selectionStart ?? content.length;
+  };
+
+  const insertMarkerAtCursor = (photoNumber: number) => {
+    const marker = `[사진${photoNumber}]`;
+    const pos = Math.max(
+      0,
+      Math.min(cursorRef.current ?? content.length, content.length),
+    );
+    const before = content.slice(0, pos).trimEnd();
+    const after = content.slice(pos).trimStart();
+    const chunks = [before, marker, after].filter((c) => c.length > 0);
+    markDirty(title, chunks.join('\n\n'), photoIds);
+    const newPos = (before ? before.length + 2 : 0) + marker.length;
+    requestAnimationFrame(() => {
+      const el = textAreaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(newPos, newPos);
+        cursorRef.current = newPos;
+      }
+    });
+  };
+
+  const thumbForNumber = (n: number): string | null => {
+    const id = photoIds[n - 1];
+    return (id && thumbs.get(id)) || null;
+  };
+
+  const dropTargetAt = (x: number, y: number) => {
+    const el = document.elementFromPoint(x, y);
+    const gapEl = el?.closest?.('[data-gap]');
+    const editorEl = el?.closest?.('[data-editor]');
+    return {
+      gap: gapEl ? parseInt(gapEl.getAttribute('data-gap') || '-1', 10) : null,
+      editor: !!editorEl,
+    };
+  };
+
+  const [dragArmed, setDragArmed] = useState(false);
+  const beginChipDrag = (
+    e: React.PointerEvent,
+    photoNumber: number,
+    occurrence: number | null,
+  ) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    dragRef.current = {
+      photoNumber,
+      occurrence,
+      startX: e.clientX,
+      startY: e.clientY,
+      moved: false,
+    };
+    setDragArmed(true);
+  };
+
+  useEffect(() => {
+    if (!dragArmed) return;
+    const onMove = (e: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      if (!d.moved) {
+        if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < 10) return;
+        d.moved = true;
+      }
+      const t = dropTargetAt(e.clientX, e.clientY);
+      setDragView({
+        x: e.clientX,
+        y: e.clientY,
+        thumb: thumbForNumber(d.photoNumber),
+        overGap: t.gap !== null && t.gap >= 0 ? t.gap : null,
+        overEditor: t.editor,
+      });
+    };
+    const onUp = (e: PointerEvent) => {
+      const d = dragRef.current;
+      dragRef.current = null;
+      setDragView(null);
+      setDragArmed(false);
+      if (!d) return;
+      if (!d.moved) {
+        // 탭: 칩트레이 칩만 커서에 삽입 (미리보기 마커 탭은 무시)
+        if (d.occurrence === null) insertMarkerAtCursor(d.photoNumber);
+        return;
+      }
+      const t = dropTargetAt(e.clientX, e.clientY);
+      if (t.gap !== null && t.gap >= 0) {
+        const next =
+          d.occurrence === null
+            ? insertMarkerAtGap(content, d.photoNumber, t.gap)
+            : moveMarkerToGap(content, d.occurrence, t.gap);
+        markDirty(title, next, photoIds);
+      } else if (t.editor) {
+        trackCursor();
+        insertMarkerAtCursor(d.photoNumber);
+      }
+      // 그 외 영역 드롭 = 취소
+    };
+    const onCancel = () => {
+      dragRef.current = null;
+      setDragView(null);
+      setDragArmed(false);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragArmed, content, title, photoIds]);
 
   const handleSaveKey = () => {
     if (!keyInput.trim()) {
@@ -326,6 +501,53 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         <p className="text-xs text-gray-500">{formatDate(date)} · 메모 {memos.length} · 사진 {photos.length}</p>
 
+        {/* 글쓰기 지시 */}
+        <div className="bg-white rounded-lg border border-gray-100 p-3">
+          <p className="text-xs text-gray-500 font-medium mb-2">✍️ 글쓰기 방향 (AI 생성·이어쓰기에 적용)</p>
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {STYLE_PRESETS.map((p) => (
+              <button
+                key={p.label}
+                onClick={() => updateStyle(p.instruction)}
+                className={`px-2.5 py-1.5 rounded-full text-xs font-medium ${
+                  style === p.instruction
+                    ? 'bg-violet-600 text-white'
+                    : 'bg-gray-100 text-gray-600 active:bg-gray-200'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <input
+            value={styleDraft}
+            onChange={(e) => setStyleDraft(e.target.value)}
+            placeholder="직접 지시하기 (예: 어린아이에게 말하듯 작성해줘)"
+            className="w-full p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+          />
+          <div className="flex gap-2 mt-2">
+            <button
+              onClick={handleSaveStyle}
+              className="flex-1 py-1.5 bg-violet-600 text-white text-sm rounded active:bg-violet-700"
+            >
+              지시문 저장
+            </button>
+            {style && (
+              <button
+                onClick={handleClearStyle}
+                className="flex-1 py-1.5 bg-gray-200 text-gray-700 text-sm rounded active:bg-gray-300"
+              >
+                지시문 삭제
+              </button>
+            )}
+          </div>
+          {style ? (
+            <p className="text-[11px] text-violet-700 mt-1.5">사용 중: {style}</p>
+          ) : (
+            <p className="text-[11px] text-gray-400 mt-1.5">사용 중: 기본 문체</p>
+          )}
+        </div>
+
         {/* 생성 버튼 */}
         <div className="flex gap-2">
           <button
@@ -354,7 +576,7 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
                 <p className="text-amber-700 font-bold">
                   ⚠️ 생성이 중간에 끊겼습니다 (사유: {genInfo.finishReason})
                 </p>
-                <p className="text-gray-500">모델 {getModelName()} · {genInfo.usage}</p>
+                <p className="text-gray-500">모델 {getModelName()} · 문체 {genInfo.style} · {genInfo.usage}</p>
                 <button
                   onClick={continuing ? () => abortRef.current?.abort() : handleContinue}
                   disabled={generating}
@@ -365,7 +587,7 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
               </div>
             ) : (
               <p className="text-gray-500">
-                ✅ 생성 완료 (STOP) · 모델 {getModelName()} · {genInfo.usage}
+                ✅ 생성 완료 (STOP) · 모델 {getModelName()} · 문체 {genInfo.style} · {genInfo.usage}
               </p>
             )}
           </div>
@@ -427,12 +649,49 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
             className="w-full p-2 border border-gray-300 rounded text-base font-bold focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
           <textarea
+            ref={textAreaRef}
+            data-editor="story"
             value={content}
             onChange={(e) => markDirty(title, e.target.value, photoIds)}
+            onSelect={trackCursor}
+            onClick={trackCursor}
+            onKeyUp={trackCursor}
             placeholder="스토리를 쓰거나 AI로 생성해보세요…"
             rows={8}
-            className="w-full p-2 border border-gray-300 rounded text-sm resize-y focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className={`w-full p-2 border rounded text-sm resize-y focus:outline-none focus:ring-2 ${
+              dragView?.overEditor
+                ? 'border-blue-500 ring-2 ring-blue-300'
+                : 'border-gray-300 focus:ring-blue-500'
+            }`}
           />
+          {photoIds.length > 0 && (
+            <div>
+              <p className="text-[11px] text-gray-500 mb-1.5">
+                📷 사진 칩을 끌어다 본문·미리보기에 놓으세요 (탭 = 커서 위치에 삽입)
+              </p>
+              <div className="flex gap-1.5 overflow-x-auto pb-1">
+                {photoIds.map((id, i) => (
+                  <div
+                    key={id}
+                    role="button"
+                    aria-label={`${i + 1}번 사진 칩`}
+                    onPointerDown={(e) => beginChipDrag(e, i + 1, null)}
+                    className="relative shrink-0 rounded overflow-hidden cursor-grab active:cursor-grabbing select-none"
+                    style={{ touchAction: 'none' }}
+                  >
+                    {thumbs.get(id) ? (
+                      <img src={thumbs.get(id)} alt="" draggable={false} className="w-14 h-14 object-cover" />
+                    ) : (
+                      <div className="w-14 h-14 bg-gray-100 animate-pulse" />
+                    )}
+                    <span className="absolute bottom-0.5 left-0.5 min-w-5 h-5 px-1 bg-blue-600 text-white text-[11px] rounded-full flex items-center justify-center font-bold">
+                      {i + 1}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="flex gap-2">
             <button
               onClick={() => markDirty(title, formatParagraphs(content), photoIds)}
@@ -504,25 +763,22 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
           </div>
         )}
 
-        {/* 공유 미리보기 */}
+        {/* 공유 미리보기 (문단 사이 드롭으로 마커 배치) */}
         {(title.trim() || content.trim()) && (
           <div className="bg-white rounded-lg border border-gray-100 p-3">
             <p className="text-xs text-gray-500 font-medium mb-2">공유 미리보기 (Band·카페 붙여넣기용)</p>
-            <div className="bg-gray-50 rounded p-3 text-sm text-gray-800 whitespace-pre-wrap max-h-64 overflow-y-auto">
-              {shareText}
+            <div className="bg-gray-50 rounded p-3 max-h-80 overflow-y-auto">
+              <p className="text-xs text-gray-500">{formatDate(date)}</p>
+              <p className="text-base font-bold text-gray-800 mb-2">『{title.trim() || '무제'}』</p>
+              <StoryBlocks
+                content={content}
+                photoIds={photoIds}
+                thumbs={thumbs}
+                dragGap={dragView?.overGap ?? null}
+                onMarkerDown={beginChipDrag}
+              />
+              <p className="text-xs text-gray-400 mt-2">#하루기록 #오늘의기록</p>
             </div>
-            {photoIds.length > 0 && (
-              <div className="flex gap-1.5 mt-2 overflow-x-auto">
-                {photoIds.slice(0, 5).map((id) => (
-                  thumbs.get(id) ? (
-                    <img key={id} src={thumbs.get(id)} alt="" className="w-14 h-14 rounded object-cover shrink-0" />
-                  ) : null
-                ))}
-                {photoIds.length > 5 && (
-                  <span className="text-xs text-gray-400 self-center">+{photoIds.length - 5}</span>
-                )}
-              </div>
-            )}
             <div className="flex gap-2 mt-3">
               <button
                 onClick={handleCopy}
@@ -547,6 +803,88 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
           </div>
         )}
       </div>
+      {/* 드래그 고스트 */}
+      {dragView && (
+        <div
+          className="fixed z-50 pointer-events-none opacity-80 rounded overflow-hidden shadow-lg ring-2 ring-blue-500"
+          style={{
+            left: dragView.x - 28,
+            top: dragView.y - 28,
+            touchAction: 'none',
+          }}
+        >
+          {dragView.thumb ? (
+            <img src={dragView.thumb} alt="" draggable={false} className="w-14 h-14 object-cover" />
+          ) : (
+            <div className="w-14 h-14 bg-blue-100 flex items-center justify-center text-2xl">📷</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 미리보기 블록 렌더: 텍스트 문단 + 사진 마커 칩 + 문단 사이 드롭 갭
+function StoryBlocks({
+  content,
+  photoIds,
+  thumbs,
+  dragGap,
+  onMarkerDown,
+}: {
+  content: string;
+  photoIds: string[];
+  thumbs: Map<string, string>;
+  dragGap: number | null;
+  onMarkerDown: (e: React.PointerEvent, photoNumber: number, occurrence: number | null) => void;
+}) {
+  const blocks = parseStoryBlocks(content);
+  let occurrence = -1;
+  const gapClass = (i: number) =>
+    `rounded transition-all ${dragGap === i ? 'h-6 bg-blue-200' : dragGap !== null ? 'h-3 bg-blue-50' : 'h-1'}`;
+  return (
+    <div className="text-sm text-gray-800">
+      {blocks.length === 0 && (
+        <p className="text-gray-400">본문이 비어 있습니다.</p>
+      )}
+      <div data-gap={0} className={gapClass(0)} />
+      {blocks.map((b, i) => {
+        if (b.kind === 'text') {
+          return (
+            <div key={i}>
+              <p className="whitespace-pre-wrap">{b.text}</p>
+              <div data-gap={i + 1} className={gapClass(i + 1)} />
+            </div>
+          );
+        }
+        occurrence += 1;
+        const occ = occurrence;
+        const entryId = photoIds[b.index - 1];
+        const thumb = entryId ? thumbs.get(entryId) : undefined;
+        return (
+          <div key={i}>
+            {!thumb ? (
+              <div className="rounded bg-amber-50 border border-amber-300 text-amber-700 text-xs p-2">
+                ⚠️ [사진{b.index}] — 선택된 사진이 없습니다
+              </div>
+            ) : (
+              <div
+                role="button"
+                aria-label={`${b.index}번 사진 마커 (드래그하여 이동)`}
+                onPointerDown={(e) => onMarkerDown(e, b.index, occ)}
+                className="relative rounded overflow-hidden cursor-grab active:cursor-grabbing select-none"
+                style={{ touchAction: 'none' }}
+              >
+                <img src={thumb} alt={`${b.index}번 사진`} draggable={false} className="w-full max-h-56 object-cover" />
+                <span className="absolute top-1 left-1 px-1.5 h-5 bg-blue-600 text-white text-[11px] rounded-full flex items-center font-bold">
+                  사진 {b.index} ⠿
+                </span>
+              </div>
+            )}
+            <div data-gap={i + 1} className={gapClass(i + 1)} />
+          </div>
+        );
+      })}
     </div>
   );
 }

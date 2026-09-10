@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   getEntriesByDate,
   addEntry,
@@ -21,6 +21,18 @@ export default function DetailPage({ date, onBack }: DetailPageProps) {
   const [editText, setEditText] = useState('');
   const [expandedPhoto, setExpandedPhoto] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [dragArmed, setDragArmed] = useState(false);
+  const [dragView, setDragView] = useState<{
+    x: number;
+    y: number;
+    targetId: string | null;
+  } | null>(null);
+  const dragRef = useRef<{
+    id: string;
+    startX: number;
+    startY: number;
+    moved: boolean;
+  } | null>(null);
 
   useEffect(() => {
     loadEntries();
@@ -112,6 +124,73 @@ export default function DetailPage({ date, onBack }: DetailPageProps) {
     await updateEntry(target.id, { sortOrder: currentOrder });
     await loadEntries();
   };
+
+  // --- 사진 핸들 드래그 순서 변경 (터치 대응) ---
+
+  const persistPhotoOrder = async (orderedIds: string[]) => {
+    const base = Date.now();
+    for (let i = 0; i < orderedIds.length; i++) {
+      await updateEntry(orderedIds[i], { sortOrder: base + i });
+    }
+    await loadEntries();
+  };
+
+  const beginPhotoDrag = (e: React.PointerEvent, id: string) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    dragRef.current = { id, startX: e.clientX, startY: e.clientY, moved: false };
+    setDragArmed(true);
+  };
+
+  useEffect(() => {
+    if (!dragArmed) return;
+    const targetAt = (x: number, y: number): string | null => {
+      const el = document.elementFromPoint(x, y);
+      return el?.closest?.('[data-photo-id]')?.getAttribute('data-photo-id') ?? null;
+    };
+    const onMove = (e: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      if (!d.moved) {
+        if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < 10) return;
+        d.moved = true;
+      }
+      const t = targetAt(e.clientX, e.clientY);
+      setDragView({ x: e.clientX, y: e.clientY, targetId: t === d.id ? null : t });
+    };
+    const onUp = (e: PointerEvent) => {
+      const d = dragRef.current;
+      dragRef.current = null;
+      setDragView(null);
+      setDragArmed(false);
+      if (!d?.moved) return;
+      const targetId = targetAt(e.clientX, e.clientY);
+      if (!targetId || targetId === d.id) return;
+      const ids = entries.filter((en) => en.type === 'photo').map((en) => en.id);
+      const from = ids.indexOf(d.id);
+      const to = ids.indexOf(targetId);
+      if (from < 0 || to < 0) return;
+      ids.splice(from, 1);
+      ids.splice(to, 0, d.id);
+      persistPhotoOrder(ids).catch((err) => {
+        console.error('사진 순서 저장 실패:', err);
+        alert('순서 저장에 실패했습니다.');
+      });
+    };
+    const onCancel = () => {
+      dragRef.current = null;
+      setDragView(null);
+      setDragArmed(false);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragArmed, entries]);
 
   const handleReplaceAudio = async (id: string) => {
     try {
@@ -222,11 +301,28 @@ export default function DetailPage({ date, onBack }: DetailPageProps) {
         {entries.map((entry) => (
           <div
             key={entry.id}
-            className="bg-white rounded-lg p-4 shadow-sm border border-gray-100"
+            data-photo-id={entry.type === 'photo' ? entry.id : undefined}
+            className={`bg-white rounded-lg p-4 shadow-sm border transition-all ${
+              dragView?.targetId === entry.id
+                ? 'border-blue-500 ring-2 ring-blue-300'
+                : 'border-gray-100'
+            } ${dragRef.current?.id === entry.id && dragView ? 'opacity-50' : ''}`}
           >
             {/* 타입 아이콘 + 시간 */}
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-gray-500">
+              <span className="text-sm font-medium text-gray-500 flex items-center gap-1">
+                {entry.type === 'photo' && (
+                  <span
+                    role="button"
+                    aria-label="끌어서 순서 변경"
+                    title="끌어서 순서 변경"
+                    onPointerDown={(e) => beginPhotoDrag(e, entry.id)}
+                    className="cursor-grab active:cursor-grabbing text-gray-400 px-1 select-none"
+                    style={{ touchAction: 'none' }}
+                  >
+                    ⠿
+                  </span>
+                )}
                 {entry.type === 'memo' && '📝 메모'}
                 {entry.type === 'photo' && '📷 사진'}
                 {entry.type === 'audio' && '🎙️ 녹음'}
@@ -344,6 +440,15 @@ export default function DetailPage({ date, onBack }: DetailPageProps) {
           </div>
         ))}
       </div>
+      {/* 드래그 고스트 */}
+      {dragView && (
+        <div
+          className="fixed z-50 pointer-events-none opacity-80 rounded-lg shadow-lg bg-blue-600 text-white text-sm font-bold px-3 py-2"
+          style={{ left: dragView.x - 40, top: dragView.y - 20, touchAction: 'none' }}
+        >
+          📷 {dragView.targetId ? '여기에 놓기' : '이동 중…'}
+        </div>
+      )}
     </div>
   );
 }

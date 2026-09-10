@@ -220,6 +220,7 @@ export async function deleteStory(id: string): Promise<void> {
 
 /**
  * 공유용 텍스트 템플릿 (Band/카페 붙여넣기)
+ * 본문 속 [사진n] 마커는 '📷 사진 n' 한 줄로 치환
  */
 export function buildShareText(
   date: string,
@@ -228,5 +229,99 @@ export function buildShareText(
 ): string {
   const [y, m, d] = date.split('-');
   const dateLine = `🗓 ${y}년 ${parseInt(m)}월 ${parseInt(d)}일 하루 기록`;
-  return `${dateLine}\n\n『${title.trim() || '무제'}』\n\n${content.trim()}\n\n#하루기록 #오늘의기록`;
+  const body = content
+    .trim()
+    .replace(/\[사진(\d+)\]/g, '📷 사진 $1');
+  return `${dateLine}\n\n『${title.trim() || '무제'}』\n\n${body}\n\n#하루기록 #오늘의기록`;
+}
+
+// === Story photo markers ([사진n]) ===
+
+/** 본문 속 사진 마커 (1-based, photoIds 순서 기준) */
+export const PHOTO_MARKER_RE = /\[사진(\d+)\]/g;
+
+export type StoryBlock =
+  | { kind: 'text'; text: string }
+  | { kind: 'photo'; index: number }; // 1-based
+
+/**
+ * 본문을 텍스트/사진 블록으로 분리.
+ * 텍스트는 빈 줄 기준 문단 단위로 나눔 (미리보기 드롭 갭과 일치).
+ * 마커가 문장 중간에 있어도 분리됨.
+ */
+export function parseStoryBlocks(content: string): StoryBlock[] {
+  const pushText = (blocks: StoryBlock[], chunk: string) => {
+    for (const p of chunk.split(/\n\s*\n/)) {
+      const text = p.trim();
+      if (text) blocks.push({ kind: 'text', text });
+    }
+  };
+  const blocks: StoryBlock[] = [];
+  let last = 0;
+  PHOTO_MARKER_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = PHOTO_MARKER_RE.exec(content)) !== null) {
+    pushText(blocks, content.slice(last, m.index));
+    blocks.push({ kind: 'photo', index: parseInt(m[1], 10) });
+    last = m.index + m[0].length;
+  }
+  pushText(blocks, content.slice(last));
+  return blocks;
+}
+
+/**
+ * 생성 직후 본문 끝에 [사진1]…[사진n] 자동 배치.
+ * 이미 마커가 있으면 중복 추가하지 않음.
+ */
+export function appendPhotoMarkers(content: string, count: number): string {
+  if (count <= 0) return content;
+  PHOTO_MARKER_RE.lastIndex = 0;
+  if (PHOTO_MARKER_RE.test(content)) return content;
+  const markers = Array.from(
+    { length: count },
+    (_, i) => `[사진${i + 1}]`,
+  ).join('\n\n');
+  const trimmed = content.trim();
+  return trimmed ? `${trimmed}\n\n${markers}` : markers;
+}
+
+/**
+ * 미리보기 문단 사이(gapIndex)에 [사진n] 삽입. 0 = 맨 앞.
+ */
+export function insertMarkerAtGap(
+  content: string,
+  photoIndex: number,
+  gapIndex: number,
+): string {
+  const blocks = parseStoryBlocks(content);
+  const gap = Math.max(0, Math.min(gapIndex, blocks.length));
+  blocks.splice(gap, 0, { kind: 'photo', index: photoIndex });
+  return blocks
+    .map((b) => (b.kind === 'text' ? b.text : `[사진${b.index}]`))
+    .join('\n\n');
+}
+
+/**
+ * 미리보기 내 마커 이동: occurrence번째 [사진] 블록을 떼어
+ * 블록 사이 gapIndex 위치에 삽입 (0 = 맨 앞).
+ */
+export function moveMarkerToGap(
+  content: string,
+  occurrence: number,
+  gapIndex: number,
+): string {
+  const blocks = parseStoryBlocks(content);
+  const photoPositions = blocks
+    .map((b, i) => (b.kind === 'photo' ? i : -1))
+    .filter((i) => i >= 0);
+  const from = photoPositions[occurrence];
+  if (from === undefined) return content;
+  const [moved] = blocks.splice(from, 1);
+  const gap = Math.max(0, Math.min(gapIndex, blocks.length));
+  // 제거된 블록보다 뒤였으면 한 칸 당김
+  const adjusted = gap > from ? gap - 1 : gap;
+  blocks.splice(adjusted, 0, moved);
+  return blocks
+    .map((b) => (b.kind === 'text' ? b.text : `[사진${b.index}]`))
+    .join('\n\n');
 }
