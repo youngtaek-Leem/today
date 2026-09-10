@@ -11,7 +11,7 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png', 'icon-512-maskable.png'],
+      includeAssets: ['favicon.svg', 'app-icon-180.png', 'app-icon-192.png', 'app-icon-512.png', 'app-icon-512-maskable.png'],
       manifest: {
         name: '하루 기록',
         short_name: '하루기록',
@@ -24,18 +24,18 @@ export default defineConfig({
         scope: '/today/',
         icons: [
           {
-            src: 'icon-192.png',
+            src: 'app-icon-192.png?v=2',
             sizes: '192x192',
             type: 'image/png',
           },
           {
-            src: 'icon-512.png',
+            src: 'app-icon-512.png?v=2',
             sizes: '512x512',
             type: 'image/png',
             purpose: 'any',
           },
           {
-            src: 'icon-512-maskable.png',
+            src: 'app-icon-512-maskable.png?v=2',
             sizes: '512x512',
             type: 'image/png',
             purpose: 'maskable',
