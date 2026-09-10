@@ -24,6 +24,10 @@ export function hasApiKey(): boolean {
   return getApiKey().length > 0;
 }
 
+export function getModelName(): string {
+  return MODEL;
+}
+
 /**
  * AI 전송용 이미지 축소 (긴 변 기준)
  */
@@ -65,6 +69,19 @@ export interface StoryDraft {
   content: string;
 }
 
+export interface TokenUsage {
+  promptTokens: number;
+  responseTokens: number;
+  totalTokens: number;
+}
+
+export interface StoryResult extends StoryDraft {
+  /** STOP이 아니면 중간 끊김 */
+  finishReason: string;
+  truncated: boolean;
+  usage: TokenUsage | null;
+}
+
 interface InlinePart {
   inline_data: { mime_type: string; data: string };
 }
@@ -104,6 +121,81 @@ function parseDraft(raw: string): StoryDraft {
   return { title: '오늘의 기록', content: text };
 }
 
+interface GenerateResponse {
+  candidates?: {
+    content?: { parts?: { text?: string }[] };
+    finishReason?: string;
+  }[];
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    totalTokenCount?: number;
+  };
+  error?: { message?: string };
+}
+
+async function callGenerate(
+  key: string,
+  parts: (TextPart | InlinePart)[],
+  maxOutputTokens: number,
+  signal?: AbortSignal,
+): Promise<GenerateResponse> {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${encodeURIComponent(key)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      body: JSON.stringify({
+        contents: [{ parts }],
+        generationConfig: { temperature: 0.8, maxOutputTokens },
+      }),
+    },
+  );
+
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const errJson = (await res.json()) as GenerateResponse;
+      if (errJson.error?.message) detail = `: ${errJson.error.message}`;
+    } catch {
+      // 본문 파싱 실패 시 상태코드만 사용
+    }
+    if (res.status === 400) {
+      throw new Error(`API 키가 유효하지 않습니다. 키를 확인해주세요${detail}`);
+    }
+    if (res.status === 404) {
+      throw new Error(`모델(${MODEL})을 찾을 수 없습니다. 모델명을 확인해주세요${detail}`);
+    }
+    throw new Error(`AI 생성 실패 (HTTP ${res.status})${detail}`);
+  }
+  return (await res.json()) as GenerateResponse;
+}
+
+function toResult(json: GenerateResponse): StoryResult {
+  const candidate = json.candidates?.[0];
+  const raw = (candidate?.content?.parts ?? [])
+    .map((p) => p.text ?? '')
+    .join('')
+    .trim();
+  if (!raw) throw new Error('AI 응답이 비어 있습니다. 다시 시도해주세요.');
+  const finishReason = candidate?.finishReason ?? 'UNKNOWN';
+  const draft = parseDraft(raw);
+  const u = json.usageMetadata;
+  return {
+    ...draft,
+    finishReason,
+    truncated: finishReason !== 'STOP',
+    usage: u
+      ? {
+          promptTokens: u.promptTokenCount ?? 0,
+          responseTokens: u.candidatesTokenCount ?? 0,
+          totalTokens: u.totalTokenCount ?? 0,
+        }
+      : null,
+  };
+}
+
 /**
  * Gemini로 스토리 초안 생성 (사진 최대 5장까지 전송)
  */
@@ -111,7 +203,7 @@ export async function generateStory(
   memos: string[],
   photos: Blob[],
   signal?: AbortSignal,
-): Promise<StoryDraft> {
+): Promise<StoryResult> {
   const key = getApiKey();
   if (!key) throw new Error('Gemini API 키가 없습니다. 설정에서 키를 입력해주세요.');
 
@@ -127,35 +219,26 @@ export async function generateStory(
     ...imageParts,
   ];
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${encodeURIComponent(key)}`,
+  return toResult(await callGenerate(key, parts, 4096, signal));
+}
+
+/**
+ * 끊긴 스토리 이어쓰기: 기존 본문 뒤에 이어지는 문장만 생성
+ */
+export async function continueStory(
+  prevContent: string,
+  signal?: AbortSignal,
+): Promise<StoryResult> {
+  const key = getApiKey();
+  if (!key) throw new Error('Gemini API 키가 없습니다. 설정에서 키를 입력해주세요.');
+  const parts: TextPart[] = [
     {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal,
-      body: JSON.stringify({
-        contents: [{ parts }],
-        generationConfig: { temperature: 0.8, maxOutputTokens: 1024 },
-      }),
+      text: `아래는 하루 기록 스토리 본문의 앞부분이다. 문체와 흐름을 유지해 바로 이어지는 뒷부분만 3~7문장으로 써라. 제목·머리말 없이 본문 문장만 출력하라.\n\n[앞부분]\n${prevContent}`,
     },
-  );
-
-  if (!res.ok) {
-    if (res.status === 400) {
-      throw new Error('API 키가 유효하지 않습니다. 키를 확인해주세요.');
-    }
-    throw new Error(`AI 생성 실패 (HTTP ${res.status})`);
-  }
-
-  const json = (await res.json()) as {
-    candidates?: { content?: { parts?: { text?: string }[] } }[];
-  };
-  const raw = json.candidates?.[0]?.content?.parts
-    ?.map((p) => p.text ?? '')
-    .join('')
-    .trim();
-  if (!raw) throw new Error('AI 응답이 비어 있습니다. 다시 시도해주세요.');
-  return parseDraft(raw);
+  ];
+  const result = await toResult(await callGenerate(key, parts, 2048, signal));
+  // 이어쓰기 결과는 파싱 없이 본문 그대로 사용
+  return { ...result, title: '', content: result.content };
 }
 
 /**

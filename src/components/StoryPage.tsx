@@ -13,7 +13,9 @@ import {
   setApiKey,
   clearApiKey,
   hasApiKey,
+  getModelName,
   generateStory,
+  continueStory,
   buildLocalDraft,
 } from '../ai/gemini';
 
@@ -42,6 +44,12 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
   const [keySaved, setKeySaved] = useState(hasApiKey());
   const [showKeyBox, setShowKeyBox] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [continuing, setContinuing] = useState(false);
+  const [genInfo, setGenInfo] = useState<{
+    finishReason: string;
+    truncated: boolean;
+    usage: string;
+  } | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -72,6 +80,7 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
         setPhotoIds(data.filter((e) => e.type === 'photo').map((e) => e.id));
       }
       setDirty(false);
+      setGenInfo(null);
     };
     load();
     return () => {
@@ -113,7 +122,11 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
     const draft = buildLocalDraft(memos, photos.length);
     markDirty(draft.title, draft.content, photos.map((p) => p.id));
     setSource('local');
+    setGenInfo(null);
   };
+
+  const toUsageText = (u: { promptTokens: number; responseTokens: number; totalTokens: number } | null) =>
+    u ? `입력 ${u.promptTokens} · 출력 ${u.responseTokens} · 합계 ${u.totalTokens} 토큰` : '토큰 정보 없음';
 
   const handleGenerate = async () => {
     if (!hasApiKey()) {
@@ -129,19 +142,50 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
-      const draft = await generateStory(
+      const result = await generateStory(
         memos,
         photos.map((p) => p.blob),
         ctrl.signal,
       );
-      markDirty(draft.title, draft.content, photos.map((p) => p.id));
+      markDirty(result.title, result.content, photos.map((p) => p.id));
       setSource('ai');
+      setGenInfo({
+        finishReason: result.finishReason,
+        truncated: result.truncated,
+        usage: toUsageText(result.usage),
+      });
     } catch (err) {
       if ((err as Error).name === 'AbortError') return;
       console.error('AI 생성 실패:', err);
       alert((err as Error).message || 'AI 생성에 실패했습니다.');
     } finally {
       setGenerating(false);
+      abortRef.current = null;
+    }
+  };
+
+  const handleContinue = async () => {
+    if (!content.trim()) {
+      alert('이어쓸 본문이 없습니다.');
+      return;
+    }
+    setContinuing(true);
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    try {
+      const result = await continueStory(content, ctrl.signal);
+      markDirty(title, `${content.trim()}\n${result.content}`, photoIds);
+      setGenInfo({
+        finishReason: result.finishReason,
+        truncated: result.truncated,
+        usage: toUsageText(result.usage),
+      });
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return;
+      console.error('이어쓰기 실패:', err);
+      alert((err as Error).message || '이어쓰기에 실패했습니다.');
+    } finally {
+      setContinuing(false);
       abortRef.current = null;
     }
   };
@@ -301,6 +345,29 @@ export default function StoryPage({ initialDate }: { initialDate: string }) {
         </div>
         {generating && (
           <p className="text-xs text-violet-600 animate-pulse text-center">AI가 하루를 엮고 있습니다…</p>
+        )}
+        {genInfo && (
+          <div className={`rounded-lg border p-3 text-xs ${genInfo.truncated ? 'bg-amber-50 border-amber-300' : 'bg-gray-50 border-gray-200'}`}>
+            {genInfo.truncated ? (
+              <div className="space-y-2">
+                <p className="text-amber-700 font-bold">
+                  ⚠️ 생성이 중간에 끊겼습니다 (사유: {genInfo.finishReason})
+                </p>
+                <p className="text-gray-500">모델 {getModelName()} · {genInfo.usage}</p>
+                <button
+                  onClick={continuing ? () => abortRef.current?.abort() : handleContinue}
+                  disabled={generating}
+                  className={`w-full py-2 rounded-lg text-sm font-bold text-white ${continuing ? 'bg-red-500' : 'bg-amber-600 active:bg-amber-700'}`}
+                >
+                  {continuing ? '⏹ 이어쓰기 취소' : '✍️ 끊긴 곳부터 이어쓰기'}
+                </button>
+              </div>
+            ) : (
+              <p className="text-gray-500">
+                ✅ 생성 완료 (STOP) · 모델 {getModelName()} · {genInfo.usage}
+              </p>
+            )}
+          </div>
         )}
 
         {/* API 키 설정 */}
